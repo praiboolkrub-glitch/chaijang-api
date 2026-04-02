@@ -1,4 +1,179 @@
 const db = require('../db/index');
+const https = require('https');
+const LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push';
+const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+
+const formatMoney = (value) => {
+    const amount = Number(value) || 0;
+    return new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB' }).format(amount);
+};
+
+const buildLineFlexMessage = (transaction) => {
+    const typeLabel = transaction.transaction_type === 'income' ? 'เงินเข้า' : 'เงินออก';
+    const amountLabel = formatMoney(transaction.amount);
+    const categoryName = transaction.category_name || '-';
+    const bankName = transaction.bank_account_name || '-';
+    const title = transaction.title || '-';
+    const dateLabel = transaction.expense_date
+        ? new Date(transaction.expense_date).toLocaleDateString('th-TH', {
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric',
+          })
+        : new Date().toLocaleDateString('th-TH', {
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric',
+          });
+
+    return {
+        type: 'flex',
+        altText: `${typeLabel} ${amountLabel}`,
+        contents: {
+            type: 'bubble',
+            header: {
+                type: 'box',
+                layout: 'vertical',
+                contents: [
+                    {
+                        type: 'text',
+                        text: typeLabel,
+                        weight: 'bold',
+                        size: 'lg',
+                        color: transaction.transaction_type === 'income' ? '#0f766e' : '#b91c1c',
+                    },
+                ],
+            },
+            body: {
+                type: 'box',
+                layout: 'vertical',
+                spacing: 'md',
+                contents: [
+                    {
+                        type: 'text',
+                        text: title,
+                        weight: 'bold',
+                        size: 'md',
+                        wrap: true,
+                    },
+                    {
+                        type: 'box',
+                        layout: 'baseline',
+                        contents: [
+                            { type: 'text', text: 'วันที่', color: '#64748b', size: 'sm', flex: 2 },
+                            { type: 'text', text: dateLabel, color: '#0f172a', size: 'sm', flex: 3 },
+                        ],
+                    },
+                    {
+                        type: 'box',
+                        layout: 'baseline',
+                        contents: [
+                            { type: 'text', text: 'หมวดหมู่', color: '#64748b', size: 'sm', flex: 2 },
+                            { type: 'text', text: categoryName, color: '#0f172a', size: 'sm', flex: 3 },
+                        ],
+                    },
+                    {
+                        type: 'box',
+                        layout: 'baseline',
+                        contents: [
+                            { type: 'text', text: 'บัญชี', color: '#64748b', size: 'sm', flex: 2 },
+                            { type: 'text', text: bankName, color: '#0f172a', size: 'sm', flex: 3 },
+                        ],
+                    },
+                ],
+            },
+            footer: {
+                type: 'box',
+                layout: 'vertical',
+                contents: [
+                    {
+                        type: 'text',
+                        text: amountLabel,
+                        weight: 'bold',
+                        size: 'xl',
+                        color: transaction.transaction_type === 'income' ? '#0f766e' : '#b91c1c',
+                        align: 'end',
+                    },
+                ],
+            },
+        },
+    };
+};
+
+const sendLinePushMessage = (recipient, message) => {
+    return new Promise((resolve, reject) => {
+        if (!LINE_CHANNEL_ACCESS_TOKEN) {
+            return reject(new Error('LINE_CHANNEL_ACCESS_TOKEN is not configured'));
+        }
+
+        const payload = JSON.stringify({ to: recipient, messages: [message] });
+        const req = https.request(LINE_PUSH_URL, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload),
+            },
+        }, (res) => {
+            let responseBody = '';
+            res.on('data', (chunk) => {
+                responseBody += chunk;
+            });
+            res.on('end', () => {
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                    try {
+                        resolve(responseBody ? JSON.parse(responseBody) : {});
+                    } catch (parseErr) {
+                        resolve({});
+                    }
+                } else {
+                    const error = new Error(`LINE push failed with status ${res.statusCode}`);
+                    error.response = responseBody;
+                    reject(error);
+                }
+            });
+        });
+
+        req.on('error', reject);
+        req.write(payload);
+        req.end();
+    });
+};
+
+const sendHouseholdLineNotifications = async (householdId, excludeUserId, transactionId) => {
+    if (!LINE_CHANNEL_ACCESS_TOKEN || !householdId) {
+        return;
+    }
+
+    let query = "SELECT line_mid FROM users WHERE household_id = $1 AND line_mid IS NOT NULL AND line_mid <> ''";
+    const values = [householdId];
+    if (excludeUserId) {
+        query += ' AND id <> $2';
+        values.push(excludeUserId);
+    }
+
+    const userResult = await db.query(query, values);
+    const recipients = userResult.rows.map((row) => row.line_mid).filter(Boolean);
+    if (!recipients.length) {
+        return;
+    }
+
+    const transactionResult = await db.query(
+        `SELECT e.*, c.name AS category_name, b.name AS bank_account_name
+        FROM expenses e
+        LEFT JOIN categories c ON e.category_id = c.id
+        LEFT JOIN bank_accounts b ON e.bank_account_id = b.id
+        WHERE e.id = $1`,
+        [transactionId]
+    );
+    const transaction = transactionResult.rows[0];
+    if (!transaction) {
+        return;
+    }
+
+    const message = buildLineFlexMessage(transaction);
+    await Promise.allSettled(recipients.map((recipient) => sendLinePushMessage(recipient, message)));
+};
 
 class ExpenseController {
     async createCategory(req, res, next) {
@@ -163,6 +338,12 @@ class ExpenseController {
                      VALUES ($1, $2, $3, $4, COALESCE($5, ''), $6, $7, COALESCE($8, CURRENT_DATE))
                      RETURNING *`,
                     [user_id, householdId, category_id, type, title, amount, notes, expense_date]
+                );
+            }
+
+            if (result.rows[0]) {
+                sendHouseholdLineNotifications(householdId, user_id, result.rows[0].id).catch((err) =>
+                    console.warn('Failed to send LINE household notification', err)
                 );
             }
 
