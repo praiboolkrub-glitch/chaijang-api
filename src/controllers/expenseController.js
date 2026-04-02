@@ -3,15 +3,18 @@ const db = require('../db/index');
 class ExpenseController {
     async createCategory(req, res, next) {
         try {
-            const { name, description } = req.body;
+            const { name, description, transaction_type } = req.body;
+            const type = transaction_type && ['income', 'expense'].includes(transaction_type.toLowerCase())
+                ? transaction_type.toLowerCase()
+                : 'expense';
 
             if (!name) {
                 return res.status(400).json({ success: false, message: 'Category name is required' });
             }
 
             const result = await db.query(
-                'INSERT INTO categories (name, description) VALUES ($1, $2) RETURNING *',
-                [name, description]
+                'INSERT INTO categories (name, description, transaction_type) VALUES ($1, $2, $3) RETURNING *',
+                [name, description, type]
             );
 
             res.status(201).json({ success: true, data: result.rows[0] });
@@ -25,7 +28,7 @@ class ExpenseController {
 
     async getCategories(req, res, next) {
         try {
-            const result = await db.query('SELECT * FROM categories ORDER BY id');
+            const result = await db.query('SELECT * FROM categories ORDER BY transaction_type, name');
             res.json({ success: true, data: result.rows });
         } catch (err) {
             next(err);
@@ -50,11 +53,14 @@ class ExpenseController {
     async updateCategory(req, res, next) {
         try {
             const { id } = req.params;
-            const { name, description } = req.body;
+            const { name, description, transaction_type } = req.body;
+            const type = transaction_type && ['income', 'expense'].includes(transaction_type.toLowerCase())
+                ? transaction_type.toLowerCase()
+                : null;
 
             const result = await db.query(
-                'UPDATE categories SET name = COALESCE($1, name), description = COALESCE($2, description), updated_at = now() WHERE id = $3 RETURNING *',
-                [name, description, id]
+                'UPDATE categories SET name = COALESCE($1, name), description = COALESCE($2, description), transaction_type = COALESCE($3, transaction_type), updated_at = now() WHERE id = $4 RETURNING *',
+                [name, description, type, id]
             );
 
             if (result.rowCount === 0) {
@@ -111,9 +117,12 @@ class ExpenseController {
             }
 
             if (category_id) {
-                const categoryCheck = await db.query('SELECT id FROM categories WHERE id = $1', [category_id]);
+                const categoryCheck = await db.query('SELECT id, transaction_type FROM categories WHERE id = $1', [category_id]);
                 if (categoryCheck.rowCount === 0) {
                     return res.status(404).json({ success: false, message: 'Category not found' });
+                }
+                if (categoryCheck.rows[0].transaction_type !== type) {
+                    return res.status(400).json({ success: false, message: 'Category type must match transaction_type' });
                 }
             }
 
@@ -167,7 +176,9 @@ class ExpenseController {
         try {
             const { category_id, user_id, bank_account_id, household_id } = req.query;
             const values = [];
-            let query = `SELECT e.*, c.name AS category_name, u.username AS user_name, b.name AS bank_account_name
+            let query = `SELECT e.*, c.name AS category_name, c.transaction_type AS category_type,
+                             COALESCE(u.display_name, u.username) AS user_name, u.profile_picture AS user_profile_picture,
+                             b.name AS bank_account_name
                          FROM expenses e
                          LEFT JOIN categories c ON e.category_id = c.id
                          LEFT JOIN users u ON e.user_id = u.id
@@ -208,7 +219,9 @@ class ExpenseController {
         try {
             const { category_id, user_id, bank_account_id, transaction_type, household_id } = req.query;
             const values = [];
-            let query = `SELECT e.*, c.name AS category_name, u.username AS user_name, b.name AS bank_account_name
+            let query = `SELECT e.*, c.name AS category_name, c.transaction_type AS category_type,
+                             COALESCE(u.display_name, u.username) AS user_name, u.profile_picture AS user_profile_picture,
+                             b.name AS bank_account_name
                          FROM expenses e
                          LEFT JOIN categories c ON e.category_id = c.id
                          LEFT JOIN users u ON e.user_id = u.id
@@ -253,7 +266,9 @@ class ExpenseController {
         try {
             const { id } = req.params;
             const result = await db.query(
-                `SELECT e.*, c.name AS category_name, u.username AS user_name, b.name AS bank_account_name
+                `SELECT e.*, c.name AS category_name, c.transaction_type AS category_type,
+                         COALESCE(u.display_name, u.username) AS user_name, u.profile_picture AS user_profile_picture,
+                         b.name AS bank_account_name
                  FROM expenses e
                  LEFT JOIN categories c ON e.category_id = c.id
                  LEFT JOIN users u ON e.user_id = u.id

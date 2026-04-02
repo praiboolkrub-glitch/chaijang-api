@@ -3,7 +3,7 @@ const db = require('../db/index');
 class UserController {
     async createUser(req, res, next) {
         try {
-            const { username, email, password, household_id, line_mid } = req.body;
+            const { username, display_name, profile_picture, email, password, household_id, line_mid } = req.body;
             const normalizedLineMid = line_mid ? String(line_mid).trim() : null;
             let userName = username ? String(username).trim() : null;
 
@@ -30,10 +30,10 @@ class UserController {
             }
 
             const result = await db.query(
-                `INSERT INTO users (username, email, password, household_id, line_mid)
-                 VALUES ($1, $2, $3, $4, $5)
-                 RETURNING id, username, email, household_id, line_mid, created_at, updated_at`,
-                [userName, email || null, password || null, household_id || null, normalizedLineMid]
+                `INSERT INTO users (username, display_name, profile_picture, email, password, household_id, line_mid)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 RETURNING id, username, display_name, profile_picture, email, household_id, line_mid, created_at, updated_at`,
+                [userName, display_name || null, profile_picture || null, email || null, password || null, household_id || null, normalizedLineMid]
             );
 
             res.status(201).json({ success: true, data: result.rows[0] });
@@ -49,7 +49,7 @@ class UserController {
         try {
             const { id } = req.params;
             const result = await db.query(
-                `SELECT u.id, u.username, u.email, u.household_id, h.name AS household_name, u.created_at, u.updated_at
+                `SELECT u.id, u.username, u.display_name, u.profile_picture, u.email, u.household_id, h.name AS household_name, u.created_at, u.updated_at
                  FROM users u
                  LEFT JOIN households h ON u.household_id = h.id
                  WHERE u.id = $1`,
@@ -81,14 +81,16 @@ class UserController {
             const result = await db.query(
                 `UPDATE users
                  SET username = COALESCE($1, username),
-                     email = COALESCE($2, email),
-                     password = COALESCE($3, password),
-                     household_id = COALESCE($4, household_id),
-                     line_mid = COALESCE($5, line_mid),
+                     display_name = COALESCE($2, display_name),
+                     profile_picture = COALESCE($3, profile_picture),
+                     email = COALESCE($4, email),
+                     password = COALESCE($5, password),
+                     household_id = COALESCE($6, household_id),
+                     line_mid = COALESCE($7, line_mid),
                      updated_at = now()
-                 WHERE id = $6
-                 RETURNING id, username, email, household_id, line_mid, created_at, updated_at`,
-                [username, email, password, household_id, line_mid, id]
+                 WHERE id = $8
+                 RETURNING id, username, display_name, profile_picture, email, household_id, line_mid, created_at, updated_at`,
+                [username, display_name, profile_picture, email, password, household_id, line_mid, id]
             );
 
             if (result.rowCount === 0) {
@@ -108,7 +110,7 @@ class UserController {
         try {
             const { line_mid } = req.params;
             const result = await db.query(
-                `SELECT u.id, u.username, u.email, u.line_mid, u.household_id, h.name AS household_name, u.created_at, u.updated_at
+                `SELECT u.id, u.username, u.display_name, u.profile_picture, u.email, u.line_mid, u.household_id, h.name AS household_name, u.created_at, u.updated_at
                  FROM users u
                  LEFT JOIN households h ON u.household_id = h.id
                  WHERE u.line_mid = $1`,

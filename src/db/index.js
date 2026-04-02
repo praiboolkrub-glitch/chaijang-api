@@ -38,6 +38,8 @@ const initialize = async () => {
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username VARCHAR(100) NOT NULL UNIQUE,
+            display_name VARCHAR(150),
+            profile_picture TEXT,
             email VARCHAR(255) UNIQUE,
             password VARCHAR(255),
             line_mid VARCHAR(255) UNIQUE,
@@ -51,6 +53,7 @@ const initialize = async () => {
             id SERIAL PRIMARY KEY,
             name VARCHAR(100) NOT NULL UNIQUE,
             description TEXT,
+            transaction_type VARCHAR(20) NOT NULL DEFAULT 'expense',
             created_at TIMESTAMP DEFAULT now(),
             updated_at TIMESTAMP DEFAULT now()
         )`;
@@ -95,7 +98,10 @@ const initialize = async () => {
     await pool.query(`ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS household_id INTEGER REFERENCES households(id) ON DELETE SET NULL`);
     await pool.query(`ALTER TABLE expenses ALTER COLUMN title DROP NOT NULL`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(150)`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_picture TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS line_mid VARCHAR(255)`);
+    await pool.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS transaction_type VARCHAR(20) NOT NULL DEFAULT 'expense'`);
     await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
     await pool.query(`ALTER TABLE users ALTER COLUMN password DROP NOT NULL`);
     await pool.query(`DO $$
