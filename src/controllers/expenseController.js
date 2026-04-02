@@ -90,18 +90,23 @@ class ExpenseController {
             const { user_id, category_id, bank_account_id, transaction_type, title, amount, notes, expense_date } = req.body;
             const type = transaction_type ? transaction_type.toLowerCase() : 'expense';
 
-            if (!title || amount === undefined) {
-                return res.status(400).json({ success: false, message: 'Expense title and amount are required' });
+            if (amount === undefined) {
+                return res.status(400).json({ success: false, message: 'Amount is required' });
             }
 
             if (!['expense', 'income'].includes(type)) {
                 return res.status(400).json({ success: false, message: 'transaction_type must be expense or income' });
             }
 
+            let householdId = null;
             if (user_id) {
-                const userCheck = await db.query('SELECT id FROM users WHERE id = $1', [user_id]);
-                if (userCheck.rowCount === 0) {
+                const userResult = await db.query('SELECT household_id FROM users WHERE id = $1', [user_id]);
+                if (userResult.rowCount === 0) {
                     return res.status(404).json({ success: false, message: 'User not found' });
+                }
+                householdId = userResult.rows[0].household_id;
+                if (!householdId) {
+                    return res.status(400).json({ success: false, message: 'User must belong to a household' });
                 }
             }
 
@@ -112,32 +117,43 @@ class ExpenseController {
                 }
             }
 
+            let selectedBankAccountId = bank_account_id;
+            if (!selectedBankAccountId && user_id) {
+                const accountResult = await db.query(
+                    `SELECT id FROM bank_accounts WHERE user_id = $1 ORDER BY is_primary DESC, id LIMIT 1`,
+                    [user_id]
+                );
+                if (accountResult.rowCount > 0) {
+                    selectedBankAccountId = accountResult.rows[0].id;
+                }
+            }
+
             let delta = type === 'income' ? amount : -amount;
             let result;
 
-            if (bank_account_id) {
-                const accountCheck = await db.query('SELECT id FROM bank_accounts WHERE id = $1', [bank_account_id]);
+            if (selectedBankAccountId) {
+                const accountCheck = await db.query('SELECT id FROM bank_accounts WHERE id = $1', [selectedBankAccountId]);
                 if (accountCheck.rowCount === 0) {
                     return res.status(404).json({ success: false, message: 'Bank account not found' });
                 }
 
                 result = await db.withTransaction(async (client) => {
                     const insertResult = await client.query(
-                        `INSERT INTO expenses (user_id, category_id, bank_account_id, transaction_type, title, amount, notes, expense_date)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, CURRENT_DATE))
+                        `INSERT INTO expenses (user_id, household_id, category_id, bank_account_id, transaction_type, title, amount, notes, expense_date)
+                         VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''), $7, $8, COALESCE($9, CURRENT_DATE))
                          RETURNING *`,
-                        [user_id, category_id, bank_account_id, type, title, amount, notes, expense_date]
+                        [user_id, householdId, category_id, selectedBankAccountId, type, title, amount, notes, expense_date]
                     );
 
-                    await client.query('UPDATE bank_accounts SET balance = balance + $1, updated_at = now() WHERE id = $2', [delta, bank_account_id]);
+                    await client.query('UPDATE bank_accounts SET balance = balance + $1, updated_at = now() WHERE id = $2', [delta, selectedBankAccountId]);
                     return insertResult;
                 });
             } else {
                 result = await db.query(
-                    `INSERT INTO expenses (user_id, category_id, transaction_type, title, amount, notes, expense_date)
-                     VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, CURRENT_DATE))
+                    `INSERT INTO expenses (user_id, household_id, category_id, transaction_type, title, amount, notes, expense_date)
+                     VALUES ($1, $2, $3, $4, COALESCE($5, ''), $6, $7, COALESCE($8, CURRENT_DATE))
                      RETURNING *`,
-                    [user_id, category_id, type, title, amount, notes, expense_date]
+                    [user_id, householdId, category_id, type, title, amount, notes, expense_date]
                 );
             }
 
@@ -149,7 +165,7 @@ class ExpenseController {
 
     async getExpenses(req, res, next) {
         try {
-            const { category_id, user_id, bank_account_id } = req.query;
+            const { category_id, user_id, bank_account_id, household_id } = req.query;
             const values = [];
             let query = `SELECT e.*, c.name AS category_name, u.username AS user_name, b.name AS bank_account_name
                          FROM expenses e
@@ -169,6 +185,10 @@ class ExpenseController {
             if (bank_account_id) {
                 values.push(bank_account_id);
                 conditions.push(`e.bank_account_id = $${values.length}`);
+            }
+            if (household_id) {
+                values.push(household_id);
+                conditions.push(`e.household_id = $${values.length}`);
             }
 
             if (conditions.length > 0) {
@@ -186,7 +206,7 @@ class ExpenseController {
 
     async getTransactions(req, res, next) {
         try {
-            const { category_id, user_id, bank_account_id, transaction_type } = req.query;
+            const { category_id, user_id, bank_account_id, transaction_type, household_id } = req.query;
             const values = [];
             let query = `SELECT e.*, c.name AS category_name, u.username AS user_name, b.name AS bank_account_name
                          FROM expenses e
@@ -206,6 +226,10 @@ class ExpenseController {
             if (bank_account_id) {
                 values.push(bank_account_id);
                 conditions.push(`e.bank_account_id = $${values.length}`);
+            }
+            if (household_id) {
+                values.push(household_id);
+                conditions.push(`e.household_id = $${values.length}`);
             }
             if (transaction_type) {
                 values.push(transaction_type);
@@ -269,10 +293,15 @@ class ExpenseController {
                 return res.status(400).json({ success: false, message: 'transaction_type must be expense or income' });
             }
 
+            let targetHouseholdId = null;
             if (user_id) {
-                const userCheck = await db.query('SELECT id FROM users WHERE id = $1', [user_id]);
-                if (userCheck.rowCount === 0) {
+                const userResult = await db.query('SELECT household_id FROM users WHERE id = $1', [user_id]);
+                if (userResult.rowCount === 0) {
                     return res.status(404).json({ success: false, message: 'User not found' });
+                }
+                targetHouseholdId = userResult.rows[0].household_id;
+                if (!targetHouseholdId) {
+                    return res.status(400).json({ success: false, message: 'User must belong to a household' });
                 }
             }
 
@@ -292,7 +321,7 @@ class ExpenseController {
 
             const oldDelta = oldType === 'income' ? oldAmount : -oldAmount;
             const newDelta = newType === 'income' ? newAmount : -newAmount;
-            const finalBankAccountId = bank_account_id !== undefined ? bank_account_id : oldBankAccountId;
+            const finalBankAccountId = bank_account_id === undefined ? oldBankAccountId : bank_account_id;
 
             const result = await db.withTransaction(async (client) => {
                 if (oldBankAccountId) {
@@ -308,6 +337,7 @@ class ExpenseController {
                      SET user_id = COALESCE($1, user_id),
                          category_id = COALESCE($2, category_id),
                          bank_account_id = COALESCE($3, bank_account_id),
+                         household_id = COALESCE($10, household_id),
                          transaction_type = COALESCE($4, transaction_type),
                          title = COALESCE($5, title),
                          amount = COALESCE($6, amount),
@@ -316,7 +346,7 @@ class ExpenseController {
                          updated_at = now()
                      WHERE id = $9
                      RETURNING *`,
-                    [user_id, category_id, bank_account_id, newType, title, amount, notes, expense_date, id]
+                    [user_id, category_id, bank_account_id, newType, title, amount, notes, expense_date, id, targetHouseholdId]
                 );
             });
 

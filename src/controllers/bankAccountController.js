@@ -3,22 +3,47 @@ const db = require('../db/index');
 class BankAccountController {
     async createBankAccount(req, res, next) {
         try {
-            const { household_id, name, bank_name, account_number, balance } = req.body;
+            const { household_id, user_id, name, bank_name, account_number, balance, is_primary } = req.body;
+            const accountOwnerId = user_id || null;
 
-            if (!household_id || !name) {
-                return res.status(400).json({ success: false, message: 'household_id and name are required' });
+            if (!accountOwnerId && !household_id) {
+                return res.status(400).json({ success: false, message: 'user_id or household_id is required' });
             }
 
-            const householdCheck = await db.query('SELECT id FROM households WHERE id = $1', [household_id]);
-            if (householdCheck.rowCount === 0) {
-                return res.status(404).json({ success: false, message: 'Household not found' });
+            if (!name) {
+                return res.status(400).json({ success: false, message: 'name is required' });
+            }
+
+            if (accountOwnerId) {
+                const userCheck = await db.query('SELECT id FROM users WHERE id = $1', [accountOwnerId]);
+                if (userCheck.rowCount === 0) {
+                    return res.status(404).json({ success: false, message: 'User not found' });
+                }
+            }
+
+            if (household_id) {
+                const householdCheck = await db.query('SELECT id FROM households WHERE id = $1', [household_id]);
+                if (householdCheck.rowCount === 0) {
+                    return res.status(404).json({ success: false, message: 'Household not found' });
+                }
+            }
+
+            let primary = Boolean(is_primary);
+            if (accountOwnerId) {
+                const existing = await db.query('SELECT id FROM bank_accounts WHERE user_id = $1', [accountOwnerId]);
+                if (existing.rowCount === 0) {
+                    primary = true;
+                }
+                if (primary) {
+                    await db.query('UPDATE bank_accounts SET is_primary = false WHERE user_id = $1', [accountOwnerId]);
+                }
             }
 
             const result = await db.query(
-                `INSERT INTO bank_accounts (household_id, name, bank_name, account_number, balance)
-                 VALUES ($1, $2, $3, $4, COALESCE($5, 0))
+                `INSERT INTO bank_accounts (household_id, user_id, name, bank_name, account_number, balance, is_primary)
+                 VALUES ($1, $2, $3, $4, $5, COALESCE($6, 0), $7)
                  RETURNING *`,
-                [household_id, name, bank_name, account_number, balance]
+                [household_id || null, accountOwnerId, name, bank_name, account_number, balance, primary]
             );
 
             res.status(201).json({ success: true, data: result.rows[0] });
@@ -32,16 +57,19 @@ class BankAccountController {
 
     async getBankAccounts(req, res, next) {
         try {
-            const { household_id } = req.query;
+            const { household_id, user_id } = req.query;
             const values = [];
             let query = 'SELECT * FROM bank_accounts';
 
-            if (household_id) {
+            if (user_id) {
+                values.push(user_id);
+                query += ` WHERE user_id = $${values.length}`;
+            } else if (household_id) {
                 values.push(household_id);
                 query += ` WHERE household_id = $${values.length}`;
             }
 
-            query += ' ORDER BY id';
+            query += ' ORDER BY is_primary DESC, id';
             const result = await db.query(query, values);
             res.json({ success: true, data: result.rows });
         } catch (err) {
@@ -67,7 +95,14 @@ class BankAccountController {
     async updateBankAccount(req, res, next) {
         try {
             const { id } = req.params;
-            const { household_id, name, bank_name, account_number, balance } = req.body;
+            const { household_id, user_id, name, bank_name, account_number, balance, is_primary } = req.body;
+
+            if (user_id) {
+                const userCheck = await db.query('SELECT id FROM users WHERE id = $1', [user_id]);
+                if (userCheck.rowCount === 0) {
+                    return res.status(404).json({ success: false, message: 'User not found' });
+                }
+            }
 
             if (household_id) {
                 const householdCheck = await db.query('SELECT id FROM households WHERE id = $1', [household_id]);
@@ -76,17 +111,29 @@ class BankAccountController {
                 }
             }
 
+            const existingResult = await db.query('SELECT user_id FROM bank_accounts WHERE id = $1', [id]);
+            if (existingResult.rowCount === 0) {
+                return res.status(404).json({ success: false, message: 'Bank account not found' });
+            }
+
+            const targetUserId = user_id || existingResult.rows[0].user_id;
+            if (is_primary && targetUserId) {
+                await db.query('UPDATE bank_accounts SET is_primary = false WHERE user_id = $1', [targetUserId]);
+            }
+
             const result = await db.query(
                 `UPDATE bank_accounts
                  SET household_id = COALESCE($1, household_id),
-                     name = COALESCE($2, name),
-                     bank_name = COALESCE($3, bank_name),
-                     account_number = COALESCE($4, account_number),
-                     balance = COALESCE($5, balance),
+                     user_id = COALESCE($2, user_id),
+                     name = COALESCE($3, name),
+                     bank_name = COALESCE($4, bank_name),
+                     account_number = COALESCE($5, account_number),
+                     balance = COALESCE($6, balance),
+                     is_primary = COALESCE($7, is_primary),
                      updated_at = now()
-                 WHERE id = $6
+                 WHERE id = $8
                  RETURNING *`,
-                [household_id, name, bank_name, account_number, balance, id]
+                [household_id, user_id, name, bank_name, account_number, balance, is_primary, id]
             );
 
             if (result.rowCount === 0) {

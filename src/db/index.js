@@ -59,10 +59,12 @@ const initialize = async () => {
         CREATE TABLE IF NOT EXISTS bank_accounts (
             id SERIAL PRIMARY KEY,
             household_id INTEGER REFERENCES households(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
             name VARCHAR(150) NOT NULL,
             bank_name VARCHAR(150),
             account_number VARCHAR(100) UNIQUE,
             balance NUMERIC(14, 2) NOT NULL DEFAULT 0,
+            is_primary BOOLEAN NOT NULL DEFAULT false,
             created_at TIMESTAMP DEFAULT now(),
             updated_at TIMESTAMP DEFAULT now()
         )`;
@@ -71,10 +73,11 @@ const initialize = async () => {
         CREATE TABLE IF NOT EXISTS expenses (
             id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            household_id INTEGER REFERENCES households(id) ON DELETE SET NULL,
             category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
             bank_account_id INTEGER REFERENCES bank_accounts(id) ON DELETE SET NULL,
             transaction_type VARCHAR(20) NOT NULL DEFAULT 'expense',
-            title VARCHAR(255) NOT NULL,
+            title VARCHAR(255),
             amount NUMERIC(12, 2) NOT NULL,
             notes TEXT,
             expense_date DATE NOT NULL DEFAULT CURRENT_DATE,
@@ -88,6 +91,10 @@ const initialize = async () => {
     await pool.query(createBankAccountsTable);
     await pool.query(createExpensesTable);
 
+    await pool.query(`ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT false`);
+    await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS household_id INTEGER REFERENCES households(id) ON DELETE SET NULL`);
+    await pool.query(`ALTER TABLE expenses ALTER COLUMN title DROP NOT NULL`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS line_mid VARCHAR(255)`);
     await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
     await pool.query(`ALTER TABLE users ALTER COLUMN password DROP NOT NULL`);
